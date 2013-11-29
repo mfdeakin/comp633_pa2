@@ -61,7 +61,7 @@ int main(int argc, char **argv)
 	} computes[] = {{standard, &computeStandard, NULL, "Standard"},
 									{cuda, &computeCUDA, standard, "CUDA"},
 									{cublas, &computeCUBLAS, standard, "CUBLAS"}};
-	for(int i = 0; i < 2; i++) {
+	for(int i = 0; i < 3; i++) {
 		struct timeval t1, t2, elapsed;
 		gettimeofday(&t1, NULL);
 		computes[i].compute(mtx, computes[i].dest, dim);
@@ -71,7 +71,7 @@ int main(int argc, char **argv)
 					 computes[i].name, elapsed.tv_sec, elapsed.tv_usec);
 		if(computes[i].compare &&
 			 compareMtx(computes[i].compare, computes[i].dest, dim, tolerance)) {
-			printf("Matrix differs from standard!\n");
+			printf("%s Matrix differs from standard!\n", computes[i].name);
 			printf("M M^T =\n");
 			printMatrix(computes[i].dest, dim);
 			printf("Standard result:\n");
