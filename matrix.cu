@@ -14,9 +14,9 @@ __global__ void AATrans(mtxel *mtx, mtxel *dest, int dim)
 	int c = floor((1+2*dim-sqrtf(1+4*dim+4*dim*dim-8*t))/2);
 	/* The row follows from the column */
 	int r = t - c * dim + c * (c - 1) / 2 + c;
-	/* printf("Dim: %d, Thread: %d, Row: %d, Column: %d, sqrt(%d): %f -> %f\n", dim, t, r, c, */
-	/* 			 1 + 4 * dim + 4 * dim * dim - 8 * t, sqrtf(1+4*dim+4*dim*dim-8*t), */
-	/* 			 1 + 2 * dim - sqrtf(1+4*dim+4*dim*dim-8*t)); */
+	printf("Dim: %d, Thread: %d, Row: %d, Column: %d, sqrt(%d): %f -> %f\n", dim, t, r, c,
+				 1 + 4 * dim + 4 * dim * dim - 8 * t, sqrtf(1+4*dim+4*dim*dim-8*t),
+				 1 + 2 * dim - sqrtf(1+4*dim+4*dim*dim-8*t));
 	if(c >= 0 && c < dim && r >= 0 && r < dim) {
 		dest[c * dim + r] = 0.0;
 		for(int k = 0; k < dim; k++)
@@ -50,7 +50,6 @@ void checkCUBLAS(cublasStatus_t err, char *event)
 {
 	switch(err) {
 	case CUBLAS_STATUS_SUCCESS:
-		printf("Success! %s\n", event);
 		break;
 	default:
 		printf("Unknown error %d! %s\n", err, event);
@@ -72,8 +71,10 @@ void computeCUBLAS(mtxel *mtx, mtxel *dest, int dim)
 	checkCUBLAS(err, "Set dev matrix 1");
 	err = cublasSetMatrix(dim, dim, sizeof(mtxel), (void *)mtx, dim, (void *)devmtx2, dim);
 	checkCUBLAS(err, "Set dev matrix 2");
-	cublasSgemm(CUBLAS_OP_T, CUBLAS_OP_N, dim, dim, dim, 1.0,
-							devmtx1, dim, devmtx2, dim, 0.0, devdest, dim);
+
+	cublasSgemm('T', 'N', dim, dim, dim, 1.0,
+		    devmtx1, dim, devmtx2, dim, 0.0, devdest, dim);
+
 	err = cublasGetError();
 	checkCUBLAS(err, "Multiplied matrix");
 	err = cublasGetMatrix(dim, dim, sizeof(mtxel), (void *)devdest, dim, dest, dim);
