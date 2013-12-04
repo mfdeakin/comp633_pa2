@@ -12,8 +12,17 @@ typedef float mtxel;
 extern "C" {
 #endif
 
+#ifdef __DEBUG__
+#define DBGPRINT(...) printf(__VA_ARGS__);
+#else
+#define DBGPRINT(...) while(false)
+#endif
+
 	void computeCUDA(mtxel *mtx, mtxel *dest, int dim);
 	void computeCUBLAS(mtxel *mtx, mtxel *dest, int dim);
+
+	int initCUDA();
+	void shutdownCUDA();
 
 #ifdef __cplusplus
 }
