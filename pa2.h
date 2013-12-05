@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <assert.h>
 
-typedef float mtxel;
+typedef double mtxel;
 
 #ifdef __cplusplus
 extern "C" {
