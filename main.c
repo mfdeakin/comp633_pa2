@@ -41,6 +41,12 @@ int main(int argc, char **argv)
 		printf("Minimum matrix size of 1x1. Exiting...");
 		return 1;
 	}
+
+	if(initCUDA()) {
+		printf("Could not initialize CUDA!\n");
+		return 1;
+	}
+
 	srand(time(0));
 	size_t size = dim * dim;
 	mtxel *mtx = malloc(sizeof(mtxel[size])),
@@ -52,7 +58,7 @@ int main(int argc, char **argv)
 		return 2;
 	}
 	fillMatrix(mtx, dim);
-
+	
 	struct {
 		mtxel *dest;
 		void (* compute)(mtxel *src, mtxel *dest, int dim);
@@ -81,6 +87,7 @@ int main(int argc, char **argv)
 	free(mtx);
 	free(cuda);
 	free(standard);
+	shutdownCUDA();
 	return 0;
 }
 
