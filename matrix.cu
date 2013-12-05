@@ -5,9 +5,9 @@
 
 #include "pa2.h"
 
-__global__ void AATrans(mtxel *mtx, mtxel *dest, int dim, int blksize, int smsize)
+__global__ void AATrans(mtxel *mtx, mtxel *dest, int dim, int blksize, int smsize, int *computed)
 {
-	int t = blockDim.x * blockIdx.x + threadIdx.x;
+	int t = (blockDim.x * blockIdx.x + threadIdx.x) * blksize;
 	/* Calculate the column the thread is working in.
 	 * We are only computing half the matrix,
 	 * since the matrix is symmetric along the diagonal.
@@ -16,33 +16,35 @@ __global__ void AATrans(mtxel *mtx, mtxel *dest, int dim, int blksize, int smsiz
 	/* The row follows from the column */
 	int r = t - c * dim + c * (c - 1) / 2 + c;
 	
-	DBGPRINT("Dim: %d, Thread: %d, Row: %d, Column: %d, "
-					 "Block Size: %d\n", dim, t, r, c, blksize);
-
+	DBGPRINT("Thread %d Initial Position: (%d, %d) with dim %d and blocksize %d\n", t, r, c, dim, blksize);
 	/* Will be treated as mtxel rows[2 * blksize][dim] 
 	 * The first blksize arrays are for the rows of the matrix at r
 	 * The second blksize arrays are for the rows of the matrix at c
 	 */
-	__shared__ mtxel rowmem[0xc000 / sizeof(mtxel) - 1];
+	extern __shared__ mtxel rowmem[];
 	
-	/* Copy our rows into fast local memory */
-	for(int i = 0; i < blksize; i++)
-		for(int k = 0; k < dim; k++)
-			rowmem[i * dim + k] = mtx[(r + i) * dim + k];
-	for(int i = 0; i < blksize; i++)
-		for(int k = 0; k < dim; k++)
-			rowmem[(i + blksize) * dim + k] = mtx[(c + i) * dim + k];
-
+	int currentcol = -1;;
 	/* Compute A A^T */
 	for(int i = 0; i < blksize; i++) {
-		for(int j = 0; j < blksize; j++) {
-			if((c + i) >= 0 && (c + i) < dim &&
-				 (r + j) >= 0 && (r + j) < dim) {
-				dest[(c + i) * dim + (r + j)] = 0.0;
-				for(int k = 0; k < dim; k++)
-					dest[(c + i) * dim + (r + j)] += rowmem[j * dim + k] *
-						rowmem[(i + blksize) * dim + k];
-				dest[(r + j) * dim + (c + i)] = dest[(c + i) * dim + (r + j)];
+		if(c >= 0 && c < dim &&
+			 r >= 0 && r < dim) {
+			computed[c * dim + r] = t + i;
+			dest[c * dim + r] = 0.0;
+			for(int k = 0; k < dim; k++) {
+				/* Move our current column into fast shared memory
+				 * I assume the compiler is smart enough not to implement it in this fashion
+				 */
+				// if(c != currentcol)
+				// 	rowmem[k] = mtx[c * dim + k];
+				dest[c * dim + r] += mtx[r * dim + k] * mtx[c * dim + k];
+			}
+			DBGPRINT("t: %d, Pos: (%d, %d), value: %f\n", t, blksize, r, c, dest[c * dim + r]);
+			dest[r * dim + c] = dest[c * dim + r];
+			currentcol = c;
+			r++;
+			if(r >= dim) {
+				c++;
+				r = c;
 			}
 		}
 	}
@@ -71,6 +73,7 @@ void computeCUDA(mtxel *hostmtx, mtxel *dest, int dim)
 	cudaMalloc(&devdest, sizeof(mtxel[dim * dim]));
 	if(!devmtx || !devdest)
 		return;
+	cudaMemset(devdest, 0, sizeof(mtxel[dim * dim]));
 	cudaMemcpy(devmtx, hostmtx, sizeof(mtxel[dim * dim]), cudaMemcpyHostToDevice);
 
 	/* blksize is the number of rows and columns a thread works with */
@@ -78,7 +81,7 @@ void computeCUDA(mtxel *hostmtx, mtxel *dest, int dim)
 	/* maxdim * (maxdim + 1) / 2 < 2^16, while anything greater is above 2^16
 	 * This constraint exists because CUDA only supports up to 2^16 blocks
 	 */
-	const int maxdim = 361;
+	const int maxdim = 32;
 	int curdim = dim;
 	/* Now calculate the size of the blocks each thread works with,
 	 * and add one extra thread, just in case
@@ -92,14 +95,26 @@ void computeCUDA(mtxel *hostmtx, mtxel *dest, int dim)
 	/* The threads shared memory will consist of blksize rows
 	 * So the total shared memory is dim * blksize
 	 */
-
+	int *devcomputed = NULL;
+	cudaMalloc(&devcomputed, sizeof(int[dim * dim]));
+	cudaMemset(devcomputed, -1, sizeof(int[dim * dim]));
 	AATrans <<<
-		curdim * (curdim + 1) / 2, 1
-					>>> (devmtx, devdest, dim, blksize, dim * blksize);
+		curdim * (curdim + 1) / 2, 1, sizeof(mtxel[dim])
+					>>> (devmtx, devdest, dim, blksize, dim, devcomputed);
 	cudaError_t err = cudaGetLastError();
 	if(err != cudaSuccess) {
 		printf("CUDA Error %d: %s\n", err, cudaGetErrorString(err));
 	}
+	int *computed = (int *)malloc(sizeof(int[dim * dim]));
+	cudaMemcpy(computed, devcomputed, sizeof(int[dim * dim]), cudaMemcpyDeviceToHost);
+	cudaFree(devcomputed);
+	
+	for(int i = 0; i < dim; i++) {
+		for(int j = 0; j < dim; j++)
+			printf("%+4d ", computed[i * dim + j]);
+		printf("\n");
+	}
+	free(computed);
 
 	cudaMemcpy(dest, devdest, sizeof(mtxel[dim * dim]), cudaMemcpyDeviceToHost);
 	cudaFree(devmtx);
@@ -171,5 +186,4 @@ int initCUDA()
 void shutdownCUDA()
 {
 	cublasShutdown();
-	
 }
