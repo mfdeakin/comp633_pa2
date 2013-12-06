@@ -5,7 +5,7 @@
 
 #include "pa2.h"
 
-__global__ void AATrans(mtxel *mtx, mtxel *dest, int dim, int blksize, int smsize, int *computed)
+__global__ void AATrans(mtxel *mtx, mtxel *dest, int dim, int blksize, int smsize)
 {
 	int t = (blockDim.x * blockIdx.x + threadIdx.x) * blksize;
 	/* Calculate the column the thread is working in.
@@ -28,7 +28,6 @@ __global__ void AATrans(mtxel *mtx, mtxel *dest, int dim, int blksize, int smsiz
 	for(int i = 0; i < blksize; i++) {
 		if(c >= 0 && c < dim &&
 			 r >= 0 && r < dim) {
-			computed[c * dim + r] = t + i;
 			dest[c * dim + r] = 0.0;
 			for(int k = 0; k < dim; k++) {
 				/* Move our current column into fast shared memory
@@ -81,40 +80,26 @@ void computeCUDA(mtxel *hostmtx, mtxel *dest, int dim)
 	/* maxdim * (maxdim + 1) / 2 < 2^16, while anything greater is above 2^16
 	 * This constraint exists because CUDA only supports up to 2^16 blocks
 	 */
-	const int maxdim = 32;
-	int curdim = dim;
+	const int maxthreads = 128;
+	int threads = dim * (dim + 1) / 2;
 	/* Now calculate the size of the blocks each thread works with,
 	 * and add one extra thread, just in case
 	 */
-	while(curdim > maxdim) {
-		blksize++;
-		curdim /= 2;
+	while(threads > maxthreads) {
+		blksize *= 2;
+		threads /= 2;
 	}
-	curdim++;
+	threads++;
 
 	/* The threads shared memory will consist of blksize rows
 	 * So the total shared memory is dim * blksize
 	 */
-	int *devcomputed = NULL;
-	cudaMalloc(&devcomputed, sizeof(int[dim * dim]));
-	cudaMemset(devcomputed, -1, sizeof(int[dim * dim]));
-	AATrans <<<
-		curdim * (curdim + 1) / 2, 1, sizeof(mtxel[dim])
-					>>> (devmtx, devdest, dim, blksize, dim, devcomputed);
+	AATrans <<< threads, 1, sizeof(mtxel[dim]) >>>
+		(devmtx, devdest, dim, blksize, dim);
 	cudaError_t err = cudaGetLastError();
 	if(err != cudaSuccess) {
 		printf("CUDA Error %d: %s\n", err, cudaGetErrorString(err));
 	}
-	int *computed = (int *)malloc(sizeof(int[dim * dim]));
-	cudaMemcpy(computed, devcomputed, sizeof(int[dim * dim]), cudaMemcpyDeviceToHost);
-	cudaFree(devcomputed);
-	
-	for(int i = 0; i < dim; i++) {
-		for(int j = 0; j < dim; j++)
-			printf("%+4d ", computed[i * dim + j]);
-		printf("\n");
-	}
-	free(computed);
 
 	cudaMemcpy(dest, devdest, sizeof(mtxel[dim * dim]), cudaMemcpyDeviceToHost);
 	cudaFree(devmtx);
