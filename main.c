@@ -73,8 +73,8 @@ int main(int argc, char **argv)
 		computes[i].compute(mtx, computes[i].dest, dim);
 		gettimeofday(&t2, NULL);
 		timersub(&t2, &t1, &elapsed);
-		printf("%s calculation took %d.%06d seconds\n",
-					 computes[i].name, elapsed.tv_sec, elapsed.tv_usec);
+		printf("%d.%06d, ",
+					 elapsed.tv_sec, elapsed.tv_usec);
 		if(computes[i].compare &&
 			 compareMtx(computes[i].compare, computes[i].dest, dim, tolerance)) {
 			printf("%s Matrix differs from standard!\n", computes[i].name);
@@ -83,7 +83,8 @@ int main(int argc, char **argv)
 			printf("Standard result:\n");
 			printMatrix(computes[i].compare, dim);
 		}
-	}	
+	}
+	printf("%d\n", dim);
 	free(mtx);
 	free(cuda);
 	free(standard);

@@ -8,6 +8,8 @@
 
 typedef double mtxel;
 
+#define __DEBUG__
+
 #ifdef __cplusplus
 extern "C" {
 #endif

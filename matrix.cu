@@ -5,18 +5,28 @@
 
 #include "pa2.h"
 
-__global__ void AATrans(mtxel *mtx, mtxel *dest, int dim, int blksize, int smsize)
+/* For accurate performance metrics, run with CUDA_LAUNCH_BLOCKING="1" */
+
+__global__ void AATrans(mtxel *mtx, mtxel *dest, int dim,
+												int blksize, int maxcache)
 {
 	int t = (blockDim.x * blockIdx.x + threadIdx.x) * blksize;
 	/* Calculate the column the thread is working in.
 	 * We are only computing half the matrix,
 	 * since the matrix is symmetric along the diagonal.
+	 * For a 4x4 matrix, the thread assignment looks as follows:
+	 * 1 2 3 4
+	 * 2 5 6 7
+	 * 3 6 8 9
+	 * 4 7 9 A
 	 */
 	int c = floor((1+2*dim-sqrtf(1+4*dim+4*dim*dim-8*t))/2);
 	/* The row follows from the column */
 	int r = t - c * dim + c * (c - 1) / 2 + c;
 	
-	DBGPRINT("Thread %d Initial Position: (%d, %d) with dim %d and blocksize %d\n", t, r, c, dim, blksize);
+	DBGPRINT("Thread %d Initial Position: (%d, %d) with "
+					 "dim %d and blocksize %d\n", t, r, c, dim, blksize);
+
 	/* Will be treated as mtxel rows[2 * blksize][dim] 
 	 * The first blksize arrays are for the rows of the matrix at r
 	 * The second blksize arrays are for the rows of the matrix at c
@@ -29,18 +39,25 @@ __global__ void AATrans(mtxel *mtx, mtxel *dest, int dim, int blksize, int smsiz
 		if(c >= 0 && c < dim &&
 			 r >= 0 && r < dim) {
 			dest[c * dim + r] = 0.0;
-			for(int k = 0; k < dim; k++) {
-				/* Move our current column into fast shared memory
-				 * I assume the compiler is smart enough not to implement it in this fashion
-				 */
-				// if(c != currentcol)
-				// 	rowmem[k] = mtx[c * dim + k];
+			if(currentcol != c) {
+				/* Move our current column into fast shared memory */
+				for(int k = 0; k < dim && k < maxcache; k++) {
+					rowmem[k] = mtx[c * dim + k];
+					dest[c * dim + r] += mtx[r * dim + k] * rowmem[k];
+				}
+				currentcol = c;
+			}
+			else {
+				for(int k = 0; k < dim && k < maxcache; k++)
+					dest[c * dim + r] += mtx[r * dim + k] * rowmem[k];
+			}
+			for(int k = maxcache; k < dim; k++) {
 				dest[c * dim + r] += mtx[r * dim + k] * mtx[c * dim + k];
 			}
 			DBGPRINT("t: %d, Pos: (%d, %d), value: %f\n", t, blksize, r, c, dest[c * dim + r]);
 			dest[r * dim + c] = dest[c * dim + r];
-			currentcol = c;
-			r++;
+			/* Move to the next element to compute */
+
 			if(r >= dim) {
 				c++;
 				r = c;
@@ -62,10 +79,15 @@ __global__ void AATransSmall(mtxel *mtx, mtxel *dest, int dim)
 	}
 }
 
+int mpcount = 0;
+int maxsharedmem = 0;
+
 void computeCUDA(mtxel *hostmtx, mtxel *dest, int dim)
 {
-	if(dim == 1)
+	if(dim == 1) {
+		printf("0.000000, ");
 		return;
+	}
 	mtxel *devmtx, *devdest;
 
 	cudaMalloc(&devmtx, sizeof(mtxel[dim * dim]));
@@ -77,29 +99,40 @@ void computeCUDA(mtxel *hostmtx, mtxel *dest, int dim)
 
 	/* blksize is the number of rows and columns a thread works with */
 	int blksize = 1;
-	/* maxdim * (maxdim + 1) / 2 < 2^16, while anything greater is above 2^16
-	 * This constraint exists because CUDA only supports up to 2^16 blocks
+	/* We want to keep all processors busy, so use some number of
+	 * blocks higher than the number of processors.
+	 * 4 seems to be the magic number, after which performance doesn't
+	 * significantly improve.
 	 */
-	const int maxthreads = 128;
-	int threads = dim * (dim + 1) / 2;
+	const int maxblocks = mpcount * 4;
+	int blocks = dim * (dim + 1) / 2;
 	/* Now calculate the size of the blocks each thread works with,
-	 * and add one extra thread, just in case
+	 * and add one extra block for the common case
 	 */
-	while(threads > maxthreads) {
+	while(blocks > maxblocks) {
 		blksize *= 2;
-		threads /= 2;
+		blocks /= 2;
 	}
-	threads++;
-
-	/* The threads shared memory will consist of blksize rows
-	 * So the total shared memory is dim * blksize
+	blocks++;
+	/* There are issues with using all the shared memory (not unexpected),
+	 * so use a large fraction of it instead
 	 */
-	AATrans <<< threads, 1, sizeof(mtxel[dim]) >>>
-		(devmtx, devdest, dim, blksize, dim);
+	maxsharedmem *= 3 / 4;
+
+	struct timeval t1, t2, elapsed;
+	gettimeofday(&t1, NULL);
+	/* Note that performance metrics must be collected with CUDA_LAUNCH_BLOCKING set
+	 */
+	AATrans <<< blocks, 1, maxsharedmem >>>
+		(devmtx, devdest, dim, blksize, maxsharedmem / sizeof(mtxel));
 	cudaError_t err = cudaGetLastError();
 	if(err != cudaSuccess) {
 		printf("CUDA Error %d: %s\n", err, cudaGetErrorString(err));
 	}
+	gettimeofday(&t2, NULL);
+	timersub(&t2, &t1, &elapsed);
+	printf("%d.%06d, ",
+				 elapsed.tv_sec, elapsed.tv_usec);
 
 	cudaMemcpy(dest, devdest, sizeof(mtxel[dim * dim]), cudaMemcpyDeviceToHost);
 	cudaFree(devmtx);
@@ -119,7 +152,7 @@ void checkCUBLAS(cublasStatus_t err, char *event)
 void computeCUBLAS(mtxel *mtx, mtxel *dest, int dim)
 {
 	cublasStatus_t err;
-	mtxel *devmtx1, *devdest;
+	mtxel *devmtx1, *devmtx2, *devdest;
 	err = cublasAlloc(dim * dim, sizeof(mtxel), (void **)&devmtx1);
 	checkCUBLAS(err, "Allocated dev matrix 1");
 	err = cublasAlloc(dim * dim, sizeof(mtxel), (void **)&devdest);
@@ -127,8 +160,16 @@ void computeCUBLAS(mtxel *mtx, mtxel *dest, int dim)
 	err = cublasSetMatrix(dim, dim, sizeof(mtxel), (void *)mtx, dim, (void *)devmtx1, dim);
 	checkCUBLAS(err, "Set dev matrix 1");
 
+	struct timeval t1, t2, elapsed;
+	gettimeofday(&t1, NULL);
+
 	cublasDgemm('T', 'N', dim, dim, dim, 1.0,
 		    devmtx1, dim, devmtx1, dim, 0.0, devdest, dim);
+
+	gettimeofday(&t2, NULL);
+	timersub(&t2, &t1, &elapsed);
+	printf("%d.%06d, ",
+				 elapsed.tv_sec, elapsed.tv_usec);
 
 	err = cublasGetError();
 	checkCUBLAS(err, "Multiplied matrix");
@@ -155,6 +196,8 @@ int initCUDA()
 	if(dev.major < 2) {
 		return 2;
 	}
+	mpcount = dev.multiProcessorCount;
+	maxsharedmem = dev.multiProcessorCount;
 	/* Make a call to a CUDA function so initialization time
 	 * isn't included in our computeCUDA time calculation
 	 */
